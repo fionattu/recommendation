@@ -2,56 +2,48 @@ import pandas as pd
 import torch
 import time
 import math
-import json
 
 # edges: 610 * 9724 = 5,931,640， 100836
 # 3000 epoches 420s
 start = time.time()
-# ratings = pd.read_csv('/Users/fiona/PycharmProjects/pmf/ml-latest-small/ratings.csv')
-ratings = pd.read_csv('/Users/fiona/PycharmProjects/pmf/ml-latest-small/train_ratings.csv')
+folder = "ml-latest-small/"
+train_file = "train_ratings.csv"
+test_file = "test_ratings.csv"
+latent_vectors_dim = 5
+max_epoch = 1500
+lr = 0.001
+lamda = 0.01
+
+# read ratings
+ratings = pd.read_csv(folder + train_file)
 print(ratings.describe())
 rating_matrix = ratings.pivot(index='userId', columns='movieId', values='rating')
 n_users, n_movies = rating_matrix.shape
-# Scaling ratings to between 0 and 1, this helps our model by constraining predictions
 min_rating, max_rating = ratings['rating'].min(), ratings['rating'].max()
 rating_matrix = (rating_matrix - min_rating) / (max_rating - min_rating)
-
-# Replacing missing ratings with -1 so we can filter them out later
 rating_matrix[rating_matrix.isnull()] = -1
 rating_matrix = torch.FloatTensor(rating_matrix.values)
 n_ratings = (rating_matrix!=-1).sum().item()
-latent_vectors = 5
-user_features = torch.randn(n_users, latent_vectors, requires_grad=True)
+
+# init latent factors
+user_features = torch.randn(n_users, latent_vectors_dim, requires_grad=True)
 user_features.data.mul_(0.01)
-movie_features = torch.randn(n_movies, latent_vectors, requires_grad=True)
+movie_features = torch.randn(n_movies, latent_vectors_dim, requires_grad=True)
 movie_features.data.mul_(0.01)
 
 proc_time = time.time()
 
-userIdMap = {}
-itemIdMap = {}
-folder = "ml-latest-small/"
-def map_index():
-    global userIdMap
-    global itemIdMap
-    with open(folder + "user.txt", 'r') as input:
-        userIdMap = json.loads(input.read())['user']
-    with open(folder + "item.txt", 'r') as input:
-        itemIdMap = json.loads(input.read())['item']
-
-
 def eval_accuracy():
     predictions = torch.sigmoid(torch.mm(user_features, movie_features.t()))
-    predictions = predictions.mul(max_rating - min_rating).add(min_rating)
-    pred_arr = predictions.detach().numpy()
+    predictions = predictions.mul(max_rating - min_rating).add(min_rating).detach().numpy().round()
     line_cnt = 0
     correct = 0
-    with open(folder + "test_ratings.csv", 'r') as input:
+    with open(folder + test_file, 'r') as input:
         for line in input:
             if line_cnt > 0:
                 lines = line.split(",")
-                user_index, item_index, rating = int(lines[0]), int(lines[1]), float(lines[2])
-                if rating == pred_arr[user_index, item_index].round():
+                user_index, item_index, rating = int(lines[0]), int(lines[1]), float(round(float(lines[2])))
+                if rating == predictions[user_index, item_index]:
                     correct += 1
             line_cnt += 1
     return correct/line_cnt
@@ -74,12 +66,9 @@ class PMFLoss(torch.nn.Module):
 
         return prediction_error + u_regularization + v_regularization, prediction_error
 
-pmferror = PMFLoss(lam_u=0.01, lam_v=0.01)
-optimizer = torch.optim.Adam([user_features, movie_features], lr=0.005) # optimizer change
+pmferror = PMFLoss(lam_u=lamda, lam_v=lamda)
+optimizer = torch.optim.Adam([user_features, movie_features], lr=lr) # optimizer change
 
-max_epoch = 1300
-start = time.time()
-eval_accuracy()
 for step, epoch in enumerate(range(max_epoch)):
     optimizer.zero_grad()
     error = pmferror(rating_matrix, user_features, movie_features)
